@@ -39,20 +39,30 @@ jobs:
         run: |
           git clone --depth=1 --branch android12-5.10 https://android.googlesource.com/kernel/common kernel_source
 
-      - name: Integrate Latest KernelSU-Next
+      - name: Integrate KernelSU and SuSFS (v2.4.0)
         run: |
-          cd kernel_source
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
-
-      - name: Integrate Latest SuSFS (v2.4.0)
-        run: |
+          git clone https://github.com/tiann/KernelSU.git KernelSU
+          git -C KernelSU checkout c680b548f3fe5c19f51e90ce97d6f0ef89594421
           git clone --depth=1 --branch gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+
+          # 1. Patch KernelSU with SuSFS v2.4.0
+          cd KernelSU
+          patch -p1 < ../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          # Bypass apk signature check so any Manager APK (KernelSU Manager / KernelSU-Next Manager) is accepted
+          sed -i 's/return check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);/return true;/g' kernel/manager/apk_sign.c
+          cd ..
+
+          # 2. Patch kernel_source with SuSFS v2.4.0
           cd kernel_source
           cp -r ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           cp -r ../susfs/kernel_patches/fs/susfs.c fs/
-          patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
-          cd drivers/kernelsu || cd KernelSU
-          patch -p1 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+
+          # 3. Hook KernelSU into kernel_source drivers
+          ln -sf ../../KernelSU/kernel drivers/kernelsu
+          grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          cd ..
 
       - name: Force Max Frequency Lock (2.91 GHz Hard Cap)
         run: |
@@ -75,7 +85,7 @@ jobs:
 
           cd kernel_source
           make O=out marble_tuned_defconfig
-          make -j$(nproc) O=out Image
+          make -j$(nproc) O=out Image 2>&1 | tee /tmp/make.log || { echo "=== BUILD FAILED: LAST 200 LINES ==="; tail -n 200 /tmp/make.log; exit 1; }
 
       - name: Package with AnyKernel3
         run: |
