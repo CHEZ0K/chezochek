@@ -1,0 +1,91 @@
+name: Build Marble GKI Tuned Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build Tuned Marble GKI Kernel (KSU-Next + SuSFS v2.4.0)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Builder Repo
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git gnupg gperf libelf-dev \
+            libssl-dev libxml2-utils lz4 lzop zip zlib1g-dev python3 python-is-python3
+
+      - name: Download AOSP Clang Toolchain
+        run: |
+          mkdir -p clang
+          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r510019b.tar.gz" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C clang
+          rm clang.tar.gz
+
+      - name: Clone GKI 5.10 Kernel Source
+        run: |
+          git clone --depth=1 --branch android12-5.10 https://android.googlesource.com/kernel/common kernel_source
+
+      - name: Integrate Latest KernelSU-Next
+        run: |
+          cd kernel_source
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+
+      - name: Integrate Latest SuSFS (v2.4.0)
+        run: |
+          git clone --depth=1 --branch gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          cd kernel_source
+          # Copy SuSFS files
+          cp -r ../susfs/kernel_patches/include/linux/susfs.h include/linux/
+          cp -r ../susfs/kernel_patches/fs/susfs.c fs/
+          # Patch core VFS
+          patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
+          # Patch KernelSU for SuSFS
+          cd drivers/kernelsu || cd KernelSU
+          patch -p1 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+
+      - name: Apply Tuned Marble Config
+        run: |
+          cp config/gki_defconfig kernel_source/arch/arm64/configs/marble_tuned_defconfig
+
+      - name: Build Kernel
+        run: |
+          export PATH="$(pwd)/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export LLVM=1
+          export LLVM_IAS=1
+
+          cd kernel_source
+          make O=out marble_tuned_defconfig
+          make -j$(nproc) O=out Image
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          sed -i 's/device.name1=.*/device.name1=marble/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=marblein/g' AnyKernel3/anykernel.sh
+          cp kernel_source/out/arch/arm64/boot/Image AnyKernel3/
+          cd AnyKernel3
+          zip -r9 ../AnyKernel3-Marble-GKI-5.10-Tuned-SuSFS-v2.4.0.zip * -x .git README.md *placeholder
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Marble-GKI-Tuned-SuSFS-v2.4.0
+          path: AnyKernel3-Marble-GKI-5.10-Tuned-SuSFS-v2.4.0.zip
