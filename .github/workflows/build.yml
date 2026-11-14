@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build Tuned Marble GKI Kernel (KSU-Next + SuSFS v2.4.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Builder Repo
         uses: actions/checkout@v4
@@ -31,9 +31,8 @@ jobs:
       - name: Download AOSP Clang Toolchain
         run: |
           mkdir -p clang
-          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r510019b.tar.gz" -o clang.tar.gz
-          tar -xzf clang.tar.gz -C clang
-          rm clang.tar.gz
+          curl -LSs "https://raw.githubusercontent.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r510019b/14.0/bin/clang" > /dev/null 2>&1 || true
+          git clone --depth=1 -b 14.0 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r510019b.git clang
 
       - name: Clone GKI 5.10 Kernel Source
         run: |
@@ -48,14 +47,17 @@ jobs:
         run: |
           git clone --depth=1 --branch gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
           cd kernel_source
-          # Copy SuSFS files
           cp -r ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           cp -r ../susfs/kernel_patches/fs/susfs.c fs/
-          # Patch core VFS
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
-          # Patch KernelSU for SuSFS
           cd drivers/kernelsu || cd KernelSU
           patch -p1 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+
+      - name: Force Max Frequency Lock (2.91 GHz Hard Cap)
+        run: |
+          cd kernel_source
+          # Ensure cpufreq max frequency is locked to hardware capability
+          sed -i 's/policy->max = policy->user_policy.max;/policy->max = policy->cpuinfo.max_freq;/g' drivers/cpufreq/cpufreq.c || true
 
       - name: Apply Tuned Marble Config
         run: |
