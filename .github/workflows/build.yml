@@ -87,7 +87,20 @@ jobs:
 
           cd kernel_source
           make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out marble_tuned_defconfig
-          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out Image
+          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out Image > /tmp/build_kernel.log 2>&1 || {
+            echo "=========================================================="
+            echo "============== KERNEL BUILD FAILED: LAST 300 LINES ======="
+            echo "=========================================================="
+            tail -n 300 /tmp/build_kernel.log
+            exit 2
+          }
+
+      - name: Upload Build Log On Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Build-Failure-Log
+          path: /tmp/build_kernel.log
 
       - name: Package with AnyKernel3
         run: |
