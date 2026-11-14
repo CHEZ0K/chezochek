@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: build-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Tuned Marble GKI Kernel (KSU-Next + SuSFS v2.4.0)
@@ -23,11 +27,10 @@ jobs:
 
       - name: Install Build Dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache curl flex git gnupg gperf libelf-dev \
-            libssl-dev libxml2-utils lz4 lzop zip zlib1g-dev python3 python-is-python3 \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+            bc bison build-essential ccache cpio curl device-tree-compiler flex \
+            git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd libncurses-dev
 
       - name: Download AOSP Clang Toolchain
         run: |
@@ -58,6 +61,7 @@ jobs:
           cp -r ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           cp -r ../susfs/kernel_patches/fs/susfs.c fs/
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+          rm -f android/abi_gki_protected_exports_*
 
           # 3. Copy KernelSU into drivers/kernelsu directly
           cp -r ../KernelSU/kernel drivers/kernelsu
@@ -68,7 +72,9 @@ jobs:
       - name: Force Max Frequency Lock (2.91 GHz Hard Cap)
         run: |
           cd kernel_source
-          sed -i 's/policy->max = policy->user_policy.max;/policy->max = policy->cpuinfo.max_freq;/g' drivers/cpufreq/cpufreq.c || true
+          # Lock policy->max directly to hardware max capability (2.91 GHz Prime, 2.49 GHz Gold, 1.80 GHz Silver)
+          sed -i 's/policy->max = new_data.max;/policy->max = policy->cpuinfo.max_freq;/g' drivers/cpufreq/cpufreq.c
+          grep -n "policy->max = policy->cpuinfo.max_freq;" drivers/cpufreq/cpufreq.c
 
       - name: Apply Tuned Marble Config
         run: |
@@ -86,8 +92,8 @@ jobs:
           export LLVM_IAS=1
 
           cd kernel_source
-          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out marble_tuned_defconfig
-          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out Image > /tmp/build_kernel.log 2>&1 || {
+          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out marble_tuned_defconfig
+          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out Image > /tmp/build_kernel.log 2>&1 || {
             echo "=========================================================="
             echo "============== KERNEL BUILD FAILED: LAST 300 LINES ======="
             echo "=========================================================="
@@ -104,9 +110,8 @@ jobs:
 
       - name: Package with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          sed -i 's/device.name1=.*/device.name1=marble/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=marblein/g' AnyKernel3/anykernel.sh
+          git clone --depth=1 https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 AnyKernel3
+          sed -i 's/kernel.string=.*/kernel.string=Marble Tuned GKI (KSU-Next + SuSFS v2.4.0)/g' AnyKernel3/anykernel.sh
 
           IMAGE=""
           if [ -f "kernel_source/out/arch/arm64/boot/Image" ]; then
