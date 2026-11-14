@@ -26,7 +26,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache curl flex git gnupg gperf libelf-dev \
-            libssl-dev libxml2-utils lz4 lzop zip zlib1g-dev python3 python-is-python3
+            libssl-dev libxml2-utils lz4 lzop zip zlib1g-dev python3 python-is-python3 \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Download AOSP Clang Toolchain
         run: |
@@ -58,8 +59,8 @@ jobs:
           cp -r ../susfs/kernel_patches/fs/susfs.c fs/
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
 
-          # 3. Hook KernelSU into kernel_source drivers
-          ln -sf ../../KernelSU/kernel drivers/kernelsu
+          # 3. Copy KernelSU into drivers/kernelsu directly
+          cp -r ../KernelSU/kernel drivers/kernelsu
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           cd ..
@@ -75,6 +76,7 @@ jobs:
 
       - name: Build Kernel
         run: |
+          set -e
           export PATH="$(pwd)/clang/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -84,15 +86,29 @@ jobs:
           export LLVM_IAS=1
 
           cd kernel_source
-          make O=out marble_tuned_defconfig
-          make -j$(nproc) O=out Image 2>&1 | tee /tmp/make.log || { echo "=== BUILD FAILED: LAST 200 LINES ==="; tail -n 200 /tmp/make.log; exit 1; }
+          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out marble_tuned_defconfig
+          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 O=out Image
 
       - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           sed -i 's/device.name1=.*/device.name1=marble/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=.*/device.name2=marblein/g' AnyKernel3/anykernel.sh
-          cp kernel_source/out/arch/arm64/boot/Image AnyKernel3/
+
+          IMAGE=""
+          if [ -f "kernel_source/out/arch/arm64/boot/Image" ]; then
+            IMAGE="kernel_source/out/arch/arm64/boot/Image"
+          elif [ -f "kernel_source/arch/arm64/boot/Image" ]; then
+            IMAGE="kernel_source/arch/arm64/boot/Image"
+          fi
+
+          if [ -z "$IMAGE" ]; then
+            echo "ERROR: Kernel Image not found!"
+            find kernel_source -name Image
+            exit 1
+          fi
+
+          cp "$IMAGE" AnyKernel3/
           cd AnyKernel3
           zip -r9 ../AnyKernel3-Marble-GKI-5.10-Tuned-SuSFS-v2.4.0.zip * -x .git README.md *placeholder
 
