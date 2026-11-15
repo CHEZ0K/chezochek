@@ -10,6 +10,9 @@ concurrency:
   group: build-kernel-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Tuned Marble GKI Kernel (KSU-Next + SuSFS v2.4.0)
@@ -71,7 +74,16 @@ jobs:
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
           rm -f android/abi_gki_protected_exports_*
 
-          # 3. Copy KernelSU into drivers/kernelsu directly
+          # 3. Apply SuSFS 5.10 compatibility fixes (from community standards)
+          python3 ../scripts/susfs_idmap_compat.py fs/susfs.c
+          python3 ../scripts/susfs_guard_priority_helpers.py fs/susfs.c
+          python3 ../scripts/susfs_fdinfo_fanotify_arity.py .
+
+          if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
+            sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
+          fi
+
+          # 4. Copy KernelSU into drivers/kernelsu directly
           cp -r ../KernelSU/kernel drivers/kernelsu
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -131,6 +143,7 @@ jobs:
           # Disable WERROR so warnings never abort compilation
           echo "# CONFIG_WERROR is not set" >> "$DEFCONFIG"
           echo "# CONFIG_CC_WERROR is not set" >> "$DEFCONFIG"
+          echo "# CONFIG_DEBUG_INFO_BTF is not set" >> "$DEFCONFIG"
 
           # Prefer ThinLTO for memory-efficient link
           echo "# CONFIG_LTO_CLANG_FULL is not set" >> "$DEFCONFIG"
@@ -139,6 +152,7 @@ jobs:
       - name: Build Kernel
         run: |
           set -e
+          set -o pipefail
           export PATH="$(pwd)/clang/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -149,7 +163,28 @@ jobs:
 
           cd kernel_source
           make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out gki_defconfig
-          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out Image
+          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out Image 2>&1 | tee /tmp/build_kernel.log
+
+      - name: Report Build Failure
+        if: failure()
+        run: |
+          echo "=========================================================="
+          echo "============== KERNEL BUILD FAILED: LAST 200 LINES ======="
+          echo "=========================================================="
+          tail -n 200 /tmp/build_kernel.log || true
+
+          # Push failure log to build-log branch
+          git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" /tmp/err_repo || true
+          if [ -d "/tmp/err_repo" ]; then
+            cd /tmp/err_repo
+            git checkout -B build-log
+            tail -n 2000 /tmp/build_kernel.log > build_error.txt 2>/dev/null || true
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add build_error.txt
+            git commit -m "build failure details for run ${{ github.run_id }}" || true
+            git push -f origin build-log || true
+          fi
 
       - name: Package with AnyKernel3
         run: |
