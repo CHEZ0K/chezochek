@@ -57,8 +57,9 @@ jobs:
       - name: Integrate KernelSU and SuSFS (v2.4.0)
         run: |
           git clone https://github.com/tiann/KernelSU.git KernelSU
-          git -C KernelSU checkout c680b548f3fe5c19f51e90ce97d6f0ef89594421
+          git -C KernelSU checkout 64833c005eca6a8dc3d73ec2d37d84c37e0d9ad2
           git clone --depth=1 --branch gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          git -C susfs checkout 784ac9e6fd49bb02499b5b60c57ccc9d0c680204
 
           # 1. Patch KernelSU with SuSFS v2.4.0
           cd KernelSU
@@ -172,6 +173,9 @@ jobs:
           echo "=========================================================="
           echo "============== KERNEL BUILD FAILED: LAST 200 LINES ======="
           echo "=========================================================="
+          if [ ! -f /tmp/build_kernel.log ]; then
+            echo "Failure happened before Build Kernel step. Check GitHub Actions job steps." > /tmp/build_kernel.log
+          fi
           tail -n 200 /tmp/build_kernel.log || true
 
           # Push failure log to build-log branch
