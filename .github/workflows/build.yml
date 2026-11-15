@@ -70,10 +70,10 @@ jobs:
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
           rm -f android/abi_gki_protected_exports_*
 
-          # 3. Apply SuSFS 5.10 compatibility fixes (from community standards)
-          python3 ../scripts/susfs_idmap_compat.py fs/susfs.c
-          python3 ../scripts/susfs_guard_priority_helpers.py fs/susfs.c
-          python3 ../scripts/susfs_fdinfo_fanotify_arity.py .
+          # 3. Apply SuSFS 5.10 fixes directly inline (no scripts needed)
+          if grep -q "static void fanotify_fdinfo(struct seq_file \*m, struct fsnotify_mark \*mark)" fs/notify/fdinfo.c; then
+            sed -i 's/static void fanotify_fdinfo(struct seq_file \*m, struct fsnotify_mark \*mark)/static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark, struct file *file)/g' fs/notify/fdinfo.c
+          fi
 
           if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
             sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
