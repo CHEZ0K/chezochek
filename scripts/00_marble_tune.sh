@@ -61,6 +61,37 @@ for queue in /sys/block/sd*/queue; do
 done
 
 # ------------------------------------------------------------------------------
-# 4. Графический стек SurfaceFlinger (снижение инпут-лага)
+# 4. Графический стек и GPU (Adreno 725)
 # ------------------------------------------------------------------------------
 resetprop debug.sf.latch_unsignaled 1 2>/dev/null || true
+
+# Снимаем термальный лимит pwrlevel с GPU (всегда доступен максимальный pwrlevel)
+if [ -d /sys/class/kgsl/kgsl-3d0 ]; then
+    echo 0 > /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel 2>/dev/null || true
+    echo 0 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null || true
+    echo 80 > /sys/class/kgsl/kgsl-3d0/idle_timer 2>/dev/null || true
+fi
+
+# ------------------------------------------------------------------------------
+# 5. Термопрофиль: поднимаем порог троттлинга батареи до 46°C
+# ------------------------------------------------------------------------------
+# Ищем все термозоны аккумулятора (battery, bms, bat) и сдвигаем trip point на 46°C (46000 m°C)
+for zone in /sys/class/thermal/thermal_zone*; do
+    if [ -f "$zone/type" ]; then
+        ztype=$(cat "$zone/type" 2>/dev/null)
+        case "$ztype" in
+            *bat*|*bms*|*battery*)
+                for trip in "$zone"/trip_point_*_temp; do
+                    if [ -f "$trip" ]; then
+                        cur_temp=$(cat "$trip" 2>/dev/null)
+                        # Если порог ниже 46°C (46000 m°C), поднимаем до 46°C
+                        if [ -n "$cur_temp" ] && [ "$cur_temp" -lt 46000 ] && [ "$cur_temp" -gt 35000 ]; then
+                            chmod 644 "$trip" 2>/dev/null || true
+                            echo 46000 > "$trip" 2>/dev/null || true
+                        fi
+                    fi
+                done
+                ;;
+        esac
+    fi
+done
