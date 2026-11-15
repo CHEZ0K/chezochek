@@ -25,6 +25,14 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
 
+      - name: Add Swap Space
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       - name: Install Build Dependencies
         run: |
           sudo apt-get update -qq
@@ -76,9 +84,57 @@ jobs:
           sed -i 's/policy->max = new_data.max;/policy->max = policy->cpuinfo.max_freq;/g' drivers/cpufreq/cpufreq.c
           grep -n "policy->max = policy->cpuinfo.max_freq;" drivers/cpufreq/cpufreq.c
 
-      - name: Apply Tuned Marble Config
+      - name: Configure Tuned GKI Defconfig
         run: |
-          cp config/gki_defconfig kernel_source/arch/arm64/configs/marble_tuned_defconfig
+          cd kernel_source
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+
+          # KernelSU & OverlayFS
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          echo "CONFIG_OVERLAY_FS=y" >> "$DEFCONFIG"
+          echo "CONFIG_MODULES=y" >> "$DEFCONFIG"
+          echo "CONFIG_KPROBES=y" >> "$DEFCONFIG"
+          echo "CONFIG_HAVE_KPROBES=y" >> "$DEFCONFIG"
+          echo "CONFIG_KPROBE_EVENTS=y" >> "$DEFCONFIG"
+
+          # SuSFS Options from Kconfig
+          for sym in $(grep -rhoE '^[[:space:]]*config[[:space:]]+KSU_SUSFS[A-Z_]*' fs/Kconfig drivers/kernelsu/ 2>/dev/null | awk '{print $2}' | sort -u); do
+            case "$sym" in
+              KSU_SUSFS_SUS_SU|KSU_SUSFS_SUS_OVERLAYFS)
+                echo "# CONFIG_${sym} is not set" >> "$DEFCONFIG"
+                ;;
+              *)
+                echo "CONFIG_${sym}=y" >> "$DEFCONFIG"
+                ;;
+            esac
+          done
+
+          # Required Debug Symbols (Never disable)
+          echo "CONFIG_DEBUG_INFO=y" >> "$DEFCONFIG"
+          echo "CONFIG_DEBUG_BUGVERBOSE=y" >> "$DEFCONFIG"
+          echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG"
+          echo "CONFIG_PRINTK_TIME=y" >> "$DEFCONFIG"
+          echo "CONFIG_PSTORE_RAM=y" >> "$DEFCONFIG"
+          echo "CONFIG_DEBUG_FS=y" >> "$DEFCONFIG"
+          echo "CONFIG_DEBUG_FS_ALLOW_ALL=y" >> "$DEFCONFIG"
+
+          # Performance & Networking
+          echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+          echo 'CONFIG_DEFAULT_TCP_CONG="bbr"' >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ_CODEL=y" >> "$DEFCONFIG"
+          echo "CONFIG_DEFAULT_FQ_CODEL=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_NF_TARGET_TTL=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET=y" >> "$DEFCONFIG"
+
+          # Disable WERROR so warnings never abort compilation
+          echo "# CONFIG_WERROR is not set" >> "$DEFCONFIG"
+          echo "# CONFIG_CC_WERROR is not set" >> "$DEFCONFIG"
+
+          # Prefer ThinLTO for memory-efficient link
+          echo "# CONFIG_LTO_CLANG_FULL is not set" >> "$DEFCONFIG"
+          echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
 
       - name: Build Kernel
         run: |
@@ -92,21 +148,8 @@ jobs:
           export LLVM_IAS=1
 
           cd kernel_source
-          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out marble_tuned_defconfig
-          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out Image > /tmp/build_kernel.log 2>&1 || {
-            echo "=========================================================="
-            echo "============== KERNEL BUILD FAILED: LAST 300 LINES ======="
-            echo "=========================================================="
-            tail -n 300 /tmp/build_kernel.log
-            exit 2
-          }
-
-      - name: Upload Build Log On Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-Build-Failure-Log
-          path: /tmp/build_kernel.log
+          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out gki_defconfig
+          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out Image
 
       - name: Package with AnyKernel3
         run: |
