@@ -54,19 +54,14 @@ jobs:
         run: |
           git clone --depth=1 --branch android12-5.10 https://android.googlesource.com/kernel/common kernel_source
 
-      - name: Integrate KernelSU and SuSFS (v2.4.0)
+      - name: Integrate KernelSU-Next and SuSFS (v2.4.0)
         run: |
-          git clone https://github.com/tiann/KernelSU.git KernelSU
-          git -C KernelSU checkout 64833c005eca6a8dc3d73ec2d37d84c37e0d9ad2
+          git clone --depth=1 --branch dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU
           git clone --depth=1 --branch gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs
           git -C susfs checkout 784ac9e6fd49bb02499b5b60c57ccc9d0c680204
 
-          # 1. Patch KernelSU with SuSFS v2.4.0
-          cd KernelSU
-          patch -p1 < ../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          # Bypass apk signature check so any Manager APK (KernelSU Manager / KernelSU-Next Manager) is accepted
-          sed -i 's/return check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);/return true;/g' kernel/manager/apk_sign.c
-          cd ..
+          # 1. Bypass APK signature check in KernelSU-Next so any Manager (KernelSU-Next Manager / Spoofed) is accepted
+          sed -i 's/bool is_manager_apk(char \*path)/bool is_manager_apk(char *path) { return true; }\nbool _unused_is_manager_apk(char *path)/' KernelSU/kernel/manager/apk_sign.c
 
           # 2. Patch kernel_source with SuSFS v2.4.0
           cd kernel_source
@@ -84,7 +79,7 @@ jobs:
             sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
           fi
 
-          # 4. Copy KernelSU into drivers/kernelsu directly (dereference symlinks so include/uapi is preserved)
+          # 4. Copy KernelSU-Next into drivers/kernelsu directly (dereference symlinks so include/uapi is preserved)
           cp -rL ../KernelSU/kernel drivers/kernelsu
           cp -r ../KernelSU/uapi drivers/kernelsu/
           rm -rf drivers/kernelsu/include/uapi
@@ -127,7 +122,7 @@ jobs:
           echo "CONFIG_DEBUG_FS=y" >> "$DEFCONFIG"
           echo "CONFIG_DEBUG_FS_ALLOW_ALL=y" >> "$DEFCONFIG"
 
-          # Performance & Networking
+          # Performance, Storage & Networking
           echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
           echo 'CONFIG_DEFAULT_TCP_CONG="bbr"' >> "$DEFCONFIG"
           echo "CONFIG_NET_SCH_FQ_CODEL=y" >> "$DEFCONFIG"
@@ -136,6 +131,10 @@ jobs:
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
           echo "CONFIG_IP_NF_TARGET_TTL=y" >> "$DEFCONFIG"
           echo "CONFIG_IP_SET=y" >> "$DEFCONFIG"
+          echo "CONFIG_MQ_IOSCHED_KYBER=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP6_NF_NAT=y" >> "$DEFCONFIG"
+          echo "CONFIG_SYSVIPC=y" >> "$DEFCONFIG"
+          echo "CONFIG_PM_AUTOSLEEP=y" >> "$DEFCONFIG"
 
           # Disable WERROR so warnings never abort compilation
           echo "# CONFIG_WERROR is not set" >> "$DEFCONFIG"
@@ -160,6 +159,13 @@ jobs:
 
           cd kernel_source
           make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out gki_defconfig
+
+          echo "=========================================================="
+          echo "========== VERIFYING CRITICAL CONFIG FLAGS ==============="
+          echo "=========================================================="
+          grep -E 'CONFIG_(KSU|OVERLAY_FS|TCP_CONG_BBR|DEFAULT_TCP_CONG|NET_SCH_FQ_CODEL|DEFAULT_FQ_CODEL|MQ_IOSCHED_KYBER|IP6_NF_NAT|SYSVIPC|PM_AUTOSLEEP|DEBUG_INFO|DEBUG_FS|LTO_CLANG_THIN)' out/.config || true
+          echo "=========================================================="
+
           make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- O=out Image 2>&1 | tee /tmp/build_kernel.log
 
       - name: Report Build Failure
