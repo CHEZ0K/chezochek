@@ -69,7 +69,7 @@ jobs:
 
           # 2. Patch kernel_source with SuSFS v2.4.0
           cd kernel_source
-          cp -r ../susfs/kernel_patches/include/linux/susfs.h include/linux/
+          cp -r ../susfs/kernel_patches/include/linux/. include/linux/
           cp -r ../susfs/kernel_patches/fs/susfs.c fs/
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
           rm -f android/abi_gki_protected_exports_*
